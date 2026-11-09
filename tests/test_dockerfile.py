@@ -314,6 +314,8 @@ def test_escape_directive_rules(tmp_path):
         ("FROM\u00a0python:3.13\n", "unknown instruction"),  # not a FROM to Docker at all
         ("FROM\u00a0--platform=linux/arm64 python:3.13\n", "unknown instruction"),
         ("FROM python:3.12\nFROM\u00a0python:3.13\n", "unknown instruction"),  # mustn't fall back to 3.12
+        ("FROM PYTHON:3.13\n", "repository name must be lowercase"),  # Docker rejects it, doesn't lowercase it
+        ("FROM python:3.1٣\n", "tag must start with a Python version"),  # an Arabic-Indic digit isn't a tag digit
     ],
 )
 def test_dockerfiles_docker_rejects(tmp_path, text, message):
