@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,18 +48,33 @@ def parse_pyodide_lock(data: dict, source: str) -> PyodideLock:
     bundled = {
         str(canonicalize_name(p["name"])): str(p["version"])
         for p in packages.values()
-        # Also listed: CPython stdlib modules, shared libraries and test bundles, which aren't PyPI packages.
-        if isinstance(p, dict) and p.get("package_type", "package") == "package" and "name" in p and "version" in p
+        # Also listed: CPython stdlib modules, shared libraries, and test bundles like
+        # aiohttp-tests, which ship as .tar/.zip rather than installable distributions.
+        # A real PyPI package always comes as a wheel, so a non-.whl file_name skips it.
+        if isinstance(p, dict)
+        and p.get("package_type", "package") == "package"
+        and "name" in p
+        and "version" in p
+        and str(p.get("file_name", "")).endswith(".whl")
     }
     return PyodideLock(source, str(info.get("version", "?")), (major, minor), abi, bundled)
 
 
 def load_pyodide_lock(spec: str) -> PyodideLock:
-    """Read a pyodide-lock.json from a path, or fetch it when given an http(s) URL."""
-    if spec.startswith(("http://", "https://")):
+    """Read a pyodide-lock.json from a path, or fetch it when given an https URL."""
+    if spec.startswith("http://"):
+        raise PyodideLockError(
+            f"{spec}: pyodide-lock.json over plain http could be altered in transit; use https or a local path"
+        )
+    if spec.startswith("https://"):
         from .pypi import fetch_json
 
-        data = fetch_json(spec)
+        try:
+            data = fetch_json(spec)
+        except urllib.error.HTTPError as e:
+            raise PyodideLockError(f"couldn't fetch {spec}: HTTP {e.code}") from None
+        except (urllib.error.URLError, TimeoutError) as e:
+            raise PyodideLockError(f"couldn't fetch {spec}: {e}") from None
     else:
         try:
             data = json.loads(Path(spec).read_text(encoding="utf-8"))

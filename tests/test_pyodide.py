@@ -1,4 +1,5 @@
 import json
+import urllib.error
 
 import pytest
 
@@ -51,7 +52,8 @@ def test_quiet_omits_pyodide_bundled_details(capsys, fake_pypi, lock):
 def test_different_bundled_version_is_flagged(capsys, fake_pypi, tmp_path):
     path = tmp_path / "pyodide-lock.json"
     info = {"abi_version": "2025_0", "python": "3.13.2", "version": "0.29.0"}
-    path.write_text(json.dumps({"info": info, "packages": {"nowheels": {"name": "nowheels", "version": "0.8"}}}))
+    packages = {"nowheels": {"name": "nowheels", "version": "0.8", "file_name": "nowheels-0.8-py3-none-any.whl"}}
+    path.write_text(json.dumps({"info": info, "packages": packages}))
     code, out, _ = run(capsys, "nowheels==0.9", "-p", "3.13", "-t", "pyodide", "--pyodide-lock", str(path))
     assert code == 0
     assert "nowheels 0.8 (you pinned 0.9)" in out
@@ -101,6 +103,31 @@ def test_url_is_fetched(capsys, fake_pypi, lock, monkeypatch):
     url = "https://cdn.example/pyodide/v0.29.0/full/pyodide-lock.json"
     code, out, _ = run(capsys, "fastlib==2.0.0", "-p", "3.13", "-t", "pyodide", "--pyodide-lock", url)
     assert code == 0
+
+
+def test_plain_http_url_is_refused(capsys, fake_pypi):
+    url = "http://cdn.example/pyodide/v0.29.0/full/pyodide-lock.json"
+    code, _, err = run(capsys, "fastlib==2.0.0", "-p", "3.13", "-t", "pyodide", "--pyodide-lock", url)
+    assert code == 2
+    assert url in err and "https" in err
+
+
+def test_fetch_error_names_the_url(capsys, fake_pypi, monkeypatch):
+    def fetch_json(url, timeout=20.0):
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(pypi, "fetch_json", fetch_json)
+    url = "https://cdn.example/pyodide/v0.29.0/full/pyodide-lock.json"
+    code, _, err = run(capsys, "fastlib==2.0.0", "-p", "3.13", "-t", "pyodide", "--pyodide-lock", url)
+    assert code == 2 and f"couldn't fetch {url}: HTTP 404" in err
+
+
+def test_test_bundles_are_not_bundled(capsys, fake_pypi, lock):
+    # aiohttp-tests ships in the Pyodide distribution as a .tar, but it isn't an installable
+    # distribution: pinning it must stay a gap, not pass because the name is in the lock.
+    code, out, _ = run(capsys, "aiohttp-tests==3.9.0", "-p", "3.13", "-t", "pyodide", "--pyodide-lock", lock, "--json")
+    assert json.loads(out)["packages"][0]["results"] == {"pyodide": "unknown"}
+    assert code == 1
 
 
 def test_lock_from_pyproject(capsys, fake_pypi, lock, tmp_path, monkeypatch):

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `--pyodide-lock` refuses plain `http://` URLs: a lockfile fetched without TLS could be altered in transit to mark packages as bundled. Use `https://` or a local path; fetch failures now name the URL (`couldn't fetch https://…/pyodide-lock.json: HTTP 404`). (#63)
+- Pyodide lockfiles: entries that aren't installable distributions no longer count as bundled. Test bundles like `aiohttp-tests` ship as `.tar`/`.zip`, and any entry whose file isn't a `.whl` is skipped, so pinning one stays a gap instead of passing. (#63)
 - Skip non-index Mercurial, Subversion and Bazaar dependencies (`hg`, `svn`, `bzr`) in `Pipfile.lock`, `pdm.lock` and `poetry.lock` instead of looking them up on PyPI. (#58, thanks [@chiragjangiir](https://github.com/chiragjangiir))
 - `--explain` shows which dependency pulls in each gap package for `uv.lock` inputs: the shortest path from your project or a dependency group, worked out per target (`via: myapp → uvicorn → uvloop`). `--json --explain` adds a matching `via` object keyed by target, like `rejected`. (#45, thanks [@YSWFelicity](https://github.com/YSWFelicity))
 - `-q` / `--quiet` prints only the gap summary and affected package names, and leaves clean runs silent. Set `quiet = true` in `[tool.wheelgap]` to use it by default. (#48, thanks [@Daiyuanranfeng](https://github.com/Daiyuanranfeng))
