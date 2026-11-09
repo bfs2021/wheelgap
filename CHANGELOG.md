@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `--dockerfile` splits lines on `\n` only, as Docker does, so a lone `\r`, a NEL or U+2028 inside a line is an error instead of a new instruction, and an old-Mac (CR-only) file no longer reads as several `FROM` lines. CRLF files still parse. (#104)
 - `--dockerfile` splits `FROM` lines on ASCII whitespace only, matching Docker, so a non-breaking space (e.g. after `FROM` or between words) is an error instead of quietly splitting words. A Dockerfile that isn't UTF-8 now gets a clear error. (#103, thanks [@chiragjangiir](https://github.com/chiragjangiir))
 - `--dockerfile` accepts quoted `--platform` values such as `FROM --platform="linux/arm64" python:3.13` (and rejects an unterminated quote). (#101, thanks [@Mr45401](https://github.com/Mr45401))
 - `--dockerfile` rejects stage names Docker rejects (e.g. `AS 1build` or `AS my@stage`) instead of accepting them. (#100, thanks [@chiragjangiir](https://github.com/chiragjangiir))

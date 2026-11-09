@@ -77,7 +77,9 @@ def _from_lines(text: str) -> list[str]:
     so a line in one that looks exactly like a FROM instruction (say, SQL's `FROM base` naming a
     stage) is still read as one: a known limit, pass -p/-t for such Dockerfiles.
     """
-    lines = [raw.rstrip("\r") for raw in text.splitlines()]
+    # BuildKit's scanLines splits on "\n" only and strips one trailing "\r", so a lone "\r",
+    # NEL or U+2028 doesn't start a new instruction the way str.splitlines() would.
+    lines = [raw.removesuffix("\r") for raw in text.split("\n")]
     esc = re.escape(_escape_char(lines))
     continued = re.compile(rf"(?<!{esc}){esc}[ \t]*$")  # one escape char at the end, not two
     found = []
@@ -150,8 +152,10 @@ def _unquote(value: str, args: str) -> str:
 
 def _split_from(args: str) -> tuple[str, str | None, str | None]:
     """`[--platform=P] image [AS name]` -> (image, platform, stage name), rejecting what Docker rejects."""
-    stripped = args.strip(" \t\v\f\r")
-    words = re.split(r"[ \t\v\f\r]+", stripped) if stripped else []
+    # Docker's FROM argument parser splits words on spaces and tabs only, so a vertical tab
+    # (`FROM python:3.13\vAS build`) leaves two arguments and is an error, as in Docker.
+    stripped = args.strip(" \t")
+    words = re.split(r"[ \t]+", stripped) if stripped else []
     platform = None
     seen_platform = False
     while words and words[0].startswith("--"):
@@ -266,7 +270,9 @@ def parse_image(image: str, platform: str | None = None) -> ImageTarget:
 
 def read_dockerfile(path: Path) -> ImageTarget:
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        # read_bytes, not read_text: universal newlines would turn a lone "\r" into "\n",
+        # while Docker only ever splits on "\n".
+        text = path.read_bytes().decode("utf-8-sig")
     except UnicodeDecodeError as e:
         byte = f"0x{e.object[e.start]:02x}"
         raise DockerfileError(f"{path}: not UTF-8 (byte {byte} at offset {e.start}), pass -p/-t instead") from None

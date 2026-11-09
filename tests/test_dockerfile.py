@@ -314,11 +314,25 @@ def test_escape_directive_rules(tmp_path):
         ("FROM\u00a0python:3.13\n", "unknown instruction"),  # not a FROM to Docker at all
         ("FROM\u00a0--platform=linux/arm64 python:3.13\n", "unknown instruction"),
         ("FROM python:3.12\nFROM\u00a0python:3.13\n", "unknown instruction"),  # mustn't fall back to 3.12
+        # BuildKit splits lines on "\n" only: each of these is one line to Docker, which rejects it.
+        ("FROM python:3.13\vAS build\n", "expected 'IMAGE' or 'IMAGE AS NAME'"),
+        ("FROM python:3.12\x85FROM python:3.13\n", "expected 'IMAGE' or 'IMAGE AS NAME'"),
+        ("FROM python:3.12\rFROM python:3.13\r", "expected 'IMAGE' or 'IMAGE AS NAME'"),  # CR-only file
     ],
 )
 def test_dockerfiles_docker_rejects(tmp_path, text, message):
     with pytest.raises(DockerfileError, match=message):
         read_dockerfile(_dockerfile(tmp_path, text))
+
+
+def test_crlf_dockerfile_still_parses(tmp_path):
+    # A trailing "\r" is stripped per line, as in Docker, and a CRLF line still continues.
+    path = tmp_path / "Dockerfile"
+    path.write_bytes(b"FROM python:3.13-alpine AS build\r\nFROM build\r\n")
+    assert read_dockerfile(path) == ImageTarget("3.13", "musl-x86_64", musl="1.2")
+
+    path.write_bytes(b"FROM --platform=linux/arm64 \\\r\n    python:3.12-slim\r\n")
+    assert read_dockerfile(path) == ImageTarget("3.12", "linux-aarch64")
 
 
 def test_dockerfile_that_is_not_utf8_is_a_clear_error(tmp_path):
