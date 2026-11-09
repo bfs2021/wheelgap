@@ -20,6 +20,7 @@ from wheelgap.dockerfile import DockerfileError, ImageTarget, last_from, parse_f
         ("python:3.11-slim-bullseye", ImageTarget("3.11", "linux-x86_64", glibc="2.31")),
         ("python:3.13.1-alpine3.22 AS runtime", ImageTarget("3.13", "musl-x86_64", musl="1.2")),
         ("docker.io/library/python:3.12", ImageTarget("3.12", "linux-x86_64")),
+        ("Docker.IO/library/python:3.12", ImageTarget("3.12", "linux-x86_64")),  # a registry host may be any case
         ("--platform= python:3.13", ImageTarget("3.13", "linux-x86_64")),  # empty value: the default
         ("-- python:3.13", ImageTarget("3.13", "linux-x86_64")),  # BuildKit drops a bare --
         ("--platform=linux/arm64 -- python:3.13-alpine", ImageTarget("3.13", "musl-aarch64", musl="1.2")),
@@ -317,6 +318,7 @@ def test_escape_directive_rules(tmp_path):
         ("FROM python:3.12\x85FROM python:3.13\n", "expected 'IMAGE' or 'IMAGE AS NAME'"),
         ("FROM python:3.12\rFROM python:3.13", "expected 'IMAGE' or 'IMAGE AS NAME'"),
         ("FROM PYTHON:3.13\n", "repository name must be lowercase"),  # Docker rejects it, doesn't lowercase it
+        ("FROM docker.io/library/PYTHON:3.13\n", "repository name must be lowercase"),
         ("FROM python:3.1٣\n", "tag must start with a Python version"),  # an Arabic-Indic digit isn't a tag digit
     ],
 )

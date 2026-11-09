@@ -222,7 +222,14 @@ def parse_image(image: str, platform: str | None = None) -> ImageTarget:
         raise DockerfileError(f"{image}: build arguments are not supported, pass -p/-t instead")
     image = image.split("@", 1)[0]
     name, _, tag = image.rpartition(":") if ":" in image.rsplit("/", 1)[-1] else (image, "", "")
-    if name != name.lower():
+    # Docker requires a lowercase repository path; a registry host (the first part, if it has a dot or colon,
+    # is localhost, or has capitals: splitDockerDomain) may be any case.
+    first, slash, path = name.partition("/")
+    if slash and (any(c in first for c in ".:") or first == "localhost" or first != first.lower()):
+        name = f"{first.lower()}/{path}"
+    else:
+        path = name
+    if path != path.lower():
         raise DockerfileError(f"{image}: repository name must be lowercase, as Docker requires")
     if name not in IMAGE_NAMES and name != UV_IMAGE:
         raise DockerfileError(
