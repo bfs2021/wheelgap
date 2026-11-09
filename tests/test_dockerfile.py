@@ -322,7 +322,7 @@ def test_escape_directive_rules(tmp_path):
         ("FROM python:3.13-SLIM\n", "unknown image variant 'SLIM'"),  # Docker Hub tags are case-sensitive
         ("FROM python:3.13-alpine3.1\u0662\n", "invalid tag"),
         ("FROM ghcr.io/astral-sh/uv:0.\u0665-python3.13-alpine\n", "invalid tag"),
-        ("FROM python:3.1٣\n", "tag must start with a Python version"),  # an Arabic-Indic digit isn't a tag digit
+        ("FROM python:3.1٣\n", "invalid tag"),  # an Arabic-Indic digit isn't allowed in a Docker tag
     ],
 )
 def test_dockerfiles_docker_rejects(tmp_path, text, message):
