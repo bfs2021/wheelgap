@@ -485,53 +485,76 @@ def _heredoc_rules(syntax: str | None) -> int | None:
     return min(minor, 16) if minor >= 4 or (minor == 3 and m.group(2)) else 0
 
 
-_GLOBAL_ARG_RE = re.compile(r"^ARG[\t\v\f\r ]+([A-Za-z_][A-Za-z0-9_]*)(?:=([^ \t\v\f\r]+))?$", re.ASCII)
+# Docker reads instruction keywords in any case, so `arg` is an ARG too.
+_GLOBAL_ARG_RE = re.compile(r"^(?i:ARG)[\t\v\f\r ]+([A-Za-z_][A-Za-z0-9_]*)(?:=([^ \t\v\f\r]+))?$", re.ASCII)
 _VAR_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))", re.ASCII)
 
 
-def _global_arg_defaults(instructions: list[tuple[str, bool]]) -> dict[str, str]:
+@dataclass
+class _GlobalArgs:
+    """The global ARGs before the first FROM: each name's default, or why it can't be used, and the instructions
+    wheelgap can't split into a name and a value. Only a FROM that uses one makes a problem an error: an ARG
+    nothing in FROM refers to doesn't change the image."""
+
+    defaults: dict[str, str]
+    problems: dict[str, str]
+    unreadable: list[str]
+
+
+def _global_arg_defaults(instructions: list[tuple[str, bool]]) -> _GlobalArgs:
     """The `ARG NAME=default` values Docker expands in FROM, from the instructions before the first FROM.
 
-    A global ARG without a default can only come from `--build-arg`, which wheelgap doesn't read, so it's an error.
-    A default using quotes, escapes or `$` (another ARG, a shell modifier) is one too: Docker would expand it, and
-    guessing it could pick the wrong image. An ARG that declares more than one variable (`ARG A=1 B=2`), or that
-    is split over a line continuation, is Docker's too, but wheelgap would read the whole thing as one value, so
-    it's an error as well.
+    A global ARG without a default can only come from `--build-arg`, which wheelgap doesn't read, so using it is an
+    error. A default using quotes, escapes or `$` (another ARG, a shell modifier) is one too: Docker would expand it,
+    and guessing it could pick the wrong image. An ARG that declares more than one variable (`ARG A=1 B=2`), or that
+    is split over a line continuation, is Docker's too, but wheelgap would read the whole thing as one value, so a
+    FROM using any build argument is an error while one is there.
     """
-    defaults: dict[str, str] = {}
+    args = _GlobalArgs({}, {}, [])
     for instruction, joined in instructions:
         if joined:
-            raise DockerfileError(
+            args.unreadable.append(
                 f"{instruction}: an ARG split over a line continuation isn't supported, pass -p/-t instead"
             )
+            continue
         m = _GLOBAL_ARG_RE.match(instruction)
         if not m:
-            raise DockerfileError(f"{instruction}: an ARG must declare one NAME=value, pass -p/-t instead")
+            args.unreadable.append(f"{instruction}: an ARG must declare one NAME=value, pass -p/-t instead")
+            continue
         name, value = m.group(1), m.group(2)
+        # A later declaration of the same name replaces the earlier one, as in Docker.
+        args.defaults.pop(name, None)
+        args.problems.pop(name, None)
         if value is None:
-            raise DockerfileError(f"ARG {name} has no default: a --build-arg value isn't read, pass -p/-t instead")
-        if any(c in value for c in "\"'\\$`"):
-            raise DockerfileError(
+            args.problems[name] = f"ARG {name} has no default: a --build-arg value isn't read, pass -p/-t instead"
+        elif any(c in value for c in "\"'\\$`"):
+            args.problems[name] = (
                 f"ARG {name}={value}: defaults with quotes, escapes or $ aren't supported, pass -p/-t instead"
             )
-        defaults[name] = value
-    return defaults
+        else:
+            args.defaults[name] = value
+    return args
 
 
-def _expand_build_args(args: str, defaults: dict[str, str]) -> tuple[str, list[str]]:
+def _expand_build_args(args: str, globals_: _GlobalArgs) -> tuple[str, list[str]]:
     """Expand `$NAME` and `${NAME}` in a FROM's arguments from the global ARG defaults, returning the names used."""
     used: list[str] = []
 
     def replace(m: re.Match[str]) -> str:
         name = m.group(1) or m.group(2)
-        if name not in defaults:
-            raise DockerfileError(f"{args}: build arguments are not supported, pass -p/-t instead")
+        if globals_.unreadable:  # it may declare this name too, after the default read here
+            raise DockerfileError(globals_.unreadable[0])
+        if name in globals_.problems:
+            raise DockerfileError(globals_.problems[name])
+        if name not in globals_.defaults:
+            raise DockerfileError(unsupported)
         used.append(name)
-        return defaults[name]
+        return globals_.defaults[name]
 
+    unsupported = f"{args}: build arguments are not supported, pass -p/-t instead"
     expanded = _VAR_REF_RE.sub(replace, args)
     if "$" in expanded:  # ${NAME:-default}, $BUILDPLATFORM and anything else wheelgap can't know
-        raise DockerfileError(f"{args}: build arguments are not supported, pass -p/-t instead")
+        raise DockerfileError(globals_.unreadable[0] if globals_.unreadable else unsupported)
     return expanded, used
 
 
@@ -639,13 +662,13 @@ def _from_instructions(text: str) -> list[tuple[int, str]]:
         raise DockerfileError(f"unterminated heredoc <<{heredocs[0][0]} (BuildKit rejects it)")
     # Global ARG defaults declared before the first FROM are expanded in FROM, as Docker does; a build may pass a
     # different --build-arg value, which wheelgap can't see, so each default used is noted on stderr.
-    defaults = _global_arg_defaults(args_before_from)
+    global_args = _global_arg_defaults(args_before_from)
     used: dict[str, str] = {}
     expanded: list[tuple[int, str]] = []
     for number, args in found:
-        args, names = _expand_build_args(args, defaults)
+        args, names = _expand_build_args(args, global_args)
         for name in names:
-            used.setdefault(name, defaults[name])
+            used.setdefault(name, global_args.defaults[name])
         expanded.append((number, args))
     for name, value in used.items():
         print(

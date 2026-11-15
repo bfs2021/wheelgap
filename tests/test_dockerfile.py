@@ -190,6 +190,8 @@ def test_read_dockerfile_expands_a_global_arg_default_in_platform(tmp_path):
         ("FROM python:${PY}-slim\nARG PY=3.13\n", "build arguments"),  # an ARG after FROM isn't used in FROM
         # Docker declares two variables here; wheelgap would read "1 B=2" as A's default, so it says so instead.
         ("ARG A=1 B=2\nFROM python:${A}-slim\n", "one NAME=value"),
+        # The second ARG sets PY to 3.12 in Docker: wheelgap can't split it, so it mustn't use the first one's 3.11.
+        ("ARG PY=3.11\nARG PY=3.12 OTHER=1\nFROM python:${PY}-slim\n", "one NAME=value"),
         ("ARG PYTHON_VERSION=3.12 \\\n    PYTHON_VERSION=3.13\nFROM python:${PYTHON_VERSION}-slim\n", "continuation"),
         # A heredoc body before the first FROM isn't a run of instructions: no ARG in it is a global one.
         ("RUN <<EOF\nARG PYTHON_VERSION=3.12\nEOF\nFROM python:${PYTHON_VERSION}-slim\n", "build arguments"),
@@ -200,6 +202,34 @@ def test_read_dockerfile_global_arg_errors(tmp_path, dockerfile, message):
     path.write_text(dockerfile, encoding="utf-8")
     with pytest.raises(DockerfileError, match=message):
         read_dockerfile(path)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        "ARG VERSION\n",
+        'ARG LABEL="my app"\n',
+        "ARG A=1 B=2\n",
+        "ARG BUILD_DATE=x \\\n    y\n",
+    ],
+)
+def test_read_dockerfile_ignores_a_global_arg_no_from_uses(tmp_path, args):
+    # An ARG wheelgap can't read only matters when FROM uses a build argument; this image is the same either way.
+    path = tmp_path / "Dockerfile"
+    path.write_text(f"{args}FROM python:3.13-slim\n", encoding="utf-8")
+    assert read_dockerfile(path) == ImageTarget("3.13", "linux-x86_64", glibc="2.41")
+
+
+def test_read_dockerfile_global_arg_keyword_in_any_case(tmp_path):
+    path = tmp_path / "Dockerfile"
+    path.write_text("arg PYTHON_VERSION=3.12\nfrom python:${PYTHON_VERSION}-slim\n", encoding="utf-8")
+    assert read_dockerfile(path) == ImageTarget("3.12", "linux-x86_64", glibc="2.41")
+
+
+def test_read_dockerfile_global_arg_redeclared_takes_the_last(tmp_path):
+    path = tmp_path / "Dockerfile"
+    path.write_text("ARG PY\nARG PY=3.12\nFROM python:${PY}-slim\n", encoding="utf-8")
+    assert read_dockerfile(path) == ImageTarget("3.12", "linux-x86_64", glibc="2.41")
 
 
 def test_no_from(tmp_path):
