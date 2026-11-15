@@ -166,6 +166,37 @@ def test_read_dockerfile_legacy_docker_hub_in_final_stage(tmp_path):
     assert read_dockerfile(path) == ImageTarget("3.13", "linux-x86_64", glibc="2.41")
 
 
+def test_read_dockerfile_expands_a_global_arg_default(tmp_path, capsys):
+    path = tmp_path / "Dockerfile"
+    path.write_text("ARG PYTHON_VERSION=3.12\nFROM python:${PYTHON_VERSION}-slim\n", encoding="utf-8")
+    assert read_dockerfile(path) == ImageTarget("3.12", "linux-x86_64", glibc="2.41")
+    assert "ARG PYTHON_VERSION=3.12" in capsys.readouterr().err
+
+
+def test_read_dockerfile_expands_a_global_arg_default_in_platform(tmp_path):
+    path = tmp_path / "Dockerfile"
+    path.write_text("ARG ARCH=linux/arm64\nFROM --platform=${ARCH} python:3.13-alpine AS runtime\n", encoding="utf-8")
+    assert read_dockerfile(path) == ImageTarget("3.13", "musl-aarch64", musl="1.2")
+
+
+@pytest.mark.parametrize(
+    ("dockerfile", "message"),
+    [
+        ("ARG PYTHON_VERSION\nFROM python:${PYTHON_VERSION}-slim\n", "has no default"),
+        ('ARG PYTHON_VERSION="3.12"\nFROM python:${PYTHON_VERSION}-slim\n', "defaults with quotes"),
+        ("ARG PYTHON_VERSION=3.1${SUFFIX}\nFROM python:${PYTHON_VERSION}-slim\n", "defaults with quotes"),
+        ("ARG ARCH=linux/amd64\nFROM --platform=${ARCH:-linux/amd64} python:3.13\n", "build arguments"),
+        ("FROM --platform=$BUILDPLATFORM python:3.13\n", "build arguments"),
+        ("FROM python:${PY}-slim\nARG PY=3.13\n", "build arguments"),  # an ARG after FROM isn't used in FROM
+    ],
+)
+def test_read_dockerfile_global_arg_errors(tmp_path, dockerfile, message):
+    path = tmp_path / "Dockerfile"
+    path.write_text(dockerfile, encoding="utf-8")
+    with pytest.raises(DockerfileError, match=message):
+        read_dockerfile(path)
+
+
 def test_no_from(tmp_path):
     path = tmp_path / "Dockerfile"
     path.write_text("RUN echo hi\n")

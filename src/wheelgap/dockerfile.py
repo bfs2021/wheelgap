@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -484,6 +485,53 @@ def _heredoc_rules(syntax: str | None) -> int | None:
     return min(minor, 16) if minor >= 4 or (minor == 3 and m.group(2)) else 0
 
 
+_GLOBAL_ARG_RE = re.compile(r"^[ \t]*ARG[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:=(.*?))?[ \t]*$", re.ASCII)
+_VAR_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))", re.ASCII)
+
+
+def _global_arg_defaults(lines: list[str], before: int) -> dict[str, str]:
+    """The `ARG NAME=default` values Docker expands in FROM, from the lines before the first FROM.
+
+    A global ARG without a default can only come from `--build-arg`, which wheelgap doesn't read, so it's an error.
+    A default using quotes, escapes or `$` (another ARG, a shell modifier) is one too: Docker would expand it, and
+    guessing it could pick the wrong image.
+    """
+    defaults: dict[str, str] = {}
+    for line in lines[:before]:
+        stripped = line.lstrip(_GO_SPACES)
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = _GLOBAL_ARG_RE.match(line)
+        if not m:
+            continue
+        name, value = m.group(1), m.group(2)
+        if value is None:
+            raise DockerfileError(f"ARG {name} has no default: a --build-arg value isn't read, pass -p/-t instead")
+        if any(c in value for c in "\"'\\$`"):
+            raise DockerfileError(
+                f"ARG {name}={value}: defaults with quotes, escapes or $ aren't supported, pass -p/-t instead"
+            )
+        defaults[name] = value
+    return defaults
+
+
+def _expand_build_args(args: str, defaults: dict[str, str]) -> tuple[str, list[str]]:
+    """Expand `$NAME` and `${NAME}` in a FROM's arguments from the global ARG defaults, returning the names used."""
+    used: list[str] = []
+
+    def replace(m: re.Match[str]) -> str:
+        name = m.group(1) or m.group(2)
+        if name not in defaults:
+            raise DockerfileError(f"{args}: build arguments are not supported, pass -p/-t instead")
+        used.append(name)
+        return defaults[name]
+
+    expanded = _VAR_REF_RE.sub(replace, args)
+    if "$" in expanded:  # ${NAME:-default}, $BUILDPLATFORM and anything else wheelgap can't know
+        raise DockerfileError(f"{args}: build arguments are not supported, pass -p/-t instead")
+    return expanded, used
+
+
 def _from_lines(text: str) -> list[str]:
     """The arguments of every FROM instruction in order, with line continuations joined as Docker joins them."""
     return [args for _, args in _from_instructions(text)]
@@ -581,7 +629,23 @@ def _from_instructions(text: str) -> list[tuple[int, str]]:
         heredocs = heredocs_in("".join(parts))
     if heredocs:
         raise DockerfileError(f"unterminated heredoc <<{heredocs[0][0]} (BuildKit rejects it)")
-    return found
+    # Global ARG defaults declared before the first FROM are expanded in FROM, as Docker does; a build may pass a
+    # different --build-arg value, which wheelgap can't see, so each default used is noted on stderr.
+    defaults = _global_arg_defaults(lines, found[0][0] - 1 if found else 0)
+    used: dict[str, str] = {}
+    expanded: list[tuple[int, str]] = []
+    for number, args in found:
+        args, names = _expand_build_args(args, defaults)
+        for name in names:
+            used.setdefault(name, defaults[name])
+        expanded.append((number, args))
+    for name, value in used.items():
+        print(
+            f"wheelgap: note: using the default of global ARG {name}={value}; -p/-t override a build that sets "
+            "--build-arg",
+            file=sys.stderr,
+        )
+    return expanded
 
 
 def last_from(text: str) -> str:
