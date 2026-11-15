@@ -211,6 +211,17 @@ def test_build_argument_problem_in_the_final_images_base_stage(tmp_path):
         read_dockerfile(path)
 
 
+def test_global_arg_naming_the_final_stage_is_noted(tmp_path):
+    # The default picks the stage; a --build-arg could pick another, so it's noted.
+    path = tmp_path / "Dockerfile"
+    path.write_text(
+        "ARG B=builder\nFROM python:3.12 AS builder\nFROM python:3.13 AS other\nFROM ${B}\n", encoding="utf-8"
+    )
+    image = read_dockerfile(path)
+    assert image == ImageTarget("3.12", "linux-x86_64", glibc="2.41")
+    assert image.build_args == (("B", "builder"),)
+
+
 def test_base_stage_global_arg_default_is_used(tmp_path):
     path = tmp_path / "Dockerfile"
     path.write_text(

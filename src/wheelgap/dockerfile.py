@@ -541,7 +541,7 @@ def _expand_build_args(args: str, globals_: _GlobalArgs) -> tuple[str, list[str]
     """Expand `$NAME` and `${NAME}` in a FROM's arguments from the global ARG defaults, returning the names used."""
     used: list[str] = []
 
-    def replace(m: re.Match[str]) -> str:
+    def expand(m: re.Match[str]) -> str:
         name = m.group(1) or m.group(2)
         if globals_.unreadable:  # it may declare this name too, after the default read here
             raise DockerfileError(globals_.unreadable[0])
@@ -553,7 +553,7 @@ def _expand_build_args(args: str, globals_: _GlobalArgs) -> tuple[str, list[str]
         return globals_.defaults[name]
 
     unsupported = f"{args}: build arguments are not supported, pass -p/-t instead"
-    expanded = _VAR_REF_RE.sub(replace, args)
+    expanded = _VAR_REF_RE.sub(expand, args)
     if "$" in expanded:  # ${NAME:-default}, $BUILDPLATFORM and anything else wheelgap can't know
         raise DockerfileError(globals_.unreadable[0] if globals_.unreadable else unsupported)
     return expanded, used
@@ -777,13 +777,15 @@ def _final_from(text: str) -> tuple[str, str | None, int, dict[str, str]]:
     for number, args in lines[:-1]:
         image, platform, stage, used = split(number, args)
         if (base := stages.get(image)) is not None:  # AS names are lowercased, references aren't
-            image, platform, number, used = base
+            image, platform, number, base_used = base
+            used = base_used | used  # an ARG naming the stage changes the image too
         if stage:
             stages[stage] = (image, platform, number, used)
     number, args = lines[-1]
     image, platform, _, used = split(number, args)
     if (base := stages.get(image)) is not None:
-        image, platform, number, used = base
+        image, platform, number, base_used = base
+        used = base_used | used  # an ARG naming the stage changes the image too
     elif stages and not any(c in image for c in ":/@$") and image.lower() not in (*IMAGE_NAMES, "scratch"):
         known = ", ".join(stages)
         raise DockerfileError(
