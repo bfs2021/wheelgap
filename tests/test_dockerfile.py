@@ -188,6 +188,11 @@ def test_read_dockerfile_expands_a_global_arg_default_in_platform(tmp_path):
         ("ARG ARCH=linux/amd64\nFROM --platform=${ARCH:-linux/amd64} python:3.13\n", "build arguments"),
         ("FROM --platform=$BUILDPLATFORM python:3.13\n", "build arguments"),
         ("FROM python:${PY}-slim\nARG PY=3.13\n", "build arguments"),  # an ARG after FROM isn't used in FROM
+        # Docker declares two variables here; wheelgap would read "1 B=2" as A's default, so it says so instead.
+        ("ARG A=1 B=2\nFROM python:${A}-slim\n", "one NAME=value"),
+        ("ARG PYTHON_VERSION=3.12 \\\n    PYTHON_VERSION=3.13\nFROM python:${PYTHON_VERSION}-slim\n", "continuation"),
+        # A heredoc body before the first FROM isn't a run of instructions: no ARG in it is a global one.
+        ("RUN <<EOF\nARG PYTHON_VERSION=3.12\nEOF\nFROM python:${PYTHON_VERSION}-slim\n", "build arguments"),
     ],
 )
 def test_read_dockerfile_global_arg_errors(tmp_path, dockerfile, message):

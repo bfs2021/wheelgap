@@ -485,25 +485,28 @@ def _heredoc_rules(syntax: str | None) -> int | None:
     return min(minor, 16) if minor >= 4 or (minor == 3 and m.group(2)) else 0
 
 
-_GLOBAL_ARG_RE = re.compile(r"^[ \t]*ARG[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:=(.*?))?[ \t]*$", re.ASCII)
+_GLOBAL_ARG_RE = re.compile(r"^ARG[\t\v\f\r ]+([A-Za-z_][A-Za-z0-9_]*)(?:=([^ \t\v\f\r]+))?$", re.ASCII)
 _VAR_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))", re.ASCII)
 
 
-def _global_arg_defaults(lines: list[str], before: int) -> dict[str, str]:
-    """The `ARG NAME=default` values Docker expands in FROM, from the lines before the first FROM.
+def _global_arg_defaults(instructions: list[tuple[str, bool]]) -> dict[str, str]:
+    """The `ARG NAME=default` values Docker expands in FROM, from the instructions before the first FROM.
 
     A global ARG without a default can only come from `--build-arg`, which wheelgap doesn't read, so it's an error.
     A default using quotes, escapes or `$` (another ARG, a shell modifier) is one too: Docker would expand it, and
-    guessing it could pick the wrong image.
+    guessing it could pick the wrong image. An ARG that declares more than one variable (`ARG A=1 B=2`), or that
+    is split over a line continuation, is Docker's too, but wheelgap would read the whole thing as one value, so
+    it's an error as well.
     """
     defaults: dict[str, str] = {}
-    for line in lines[:before]:
-        stripped = line.lstrip(_GO_SPACES)
-        if not stripped or stripped.startswith("#"):
-            continue
-        m = _GLOBAL_ARG_RE.match(line)
+    for instruction, joined in instructions:
+        if joined:
+            raise DockerfileError(
+                f"{instruction}: an ARG split over a line continuation isn't supported, pass -p/-t instead"
+            )
+        m = _GLOBAL_ARG_RE.match(instruction)
         if not m:
-            continue
+            raise DockerfileError(f"{instruction}: an ARG must declare one NAME=value, pass -p/-t instead")
         name, value = m.group(1), m.group(2)
         if value is None:
             raise DockerfileError(f"ARG {name} has no default: a --build-arg value isn't read, pass -p/-t instead")
@@ -559,6 +562,7 @@ def _from_instructions(text: str) -> list[tuple[int, str]]:
     esc = re.escape(escape)
     continued = re.compile(rf"(?<!{esc}){esc}[ \t]*$")  # one escape char at the end, not two
     found: list[tuple[int, str]] = []
+    args_before_from: list[tuple[str, bool]] = []  # (instruction, continued) of the ARGs before the first FROM
     parts: list[str] = []  # an instruction continued onto the next line
     start = 0  # the line the instruction being read starts on
     heredocs: deque[tuple[str, bool]] = deque()  # (delimiter, strip_tabs) of the bodies still to skip, in order
@@ -581,6 +585,10 @@ def _from_instructions(text: str) -> list[tuple[int, str]]:
             if len(words) == 1:
                 raise DockerfileError("FROM with no image")
             found.append((line_number, words[1]))
+        elif not found and words and words[0].upper() == "ARG":
+            # The ARGs before the first FROM, as Docker joined them: only those are expanded in FROM. A line in a
+            # heredoc body never gets here, so `RUN <<EOF` with an ARG in its body isn't read as one.
+            args_before_from.append((instruction, joined))
 
     def heredocs_in(instruction: str) -> deque[tuple[str, bool]]:
         docs = deque(_heredocs(instruction, escape))
@@ -631,7 +639,7 @@ def _from_instructions(text: str) -> list[tuple[int, str]]:
         raise DockerfileError(f"unterminated heredoc <<{heredocs[0][0]} (BuildKit rejects it)")
     # Global ARG defaults declared before the first FROM are expanded in FROM, as Docker does; a build may pass a
     # different --build-arg value, which wheelgap can't see, so each default used is noted on stderr.
-    defaults = _global_arg_defaults(lines, found[0][0] - 1 if found else 0)
+    defaults = _global_arg_defaults(args_before_from)
     used: dict[str, str] = {}
     expanded: list[tuple[int, str]] = []
     for number, args in found:
