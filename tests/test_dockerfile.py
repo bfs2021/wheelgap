@@ -169,8 +169,56 @@ def test_read_dockerfile_legacy_docker_hub_in_final_stage(tmp_path):
 def test_read_dockerfile_expands_a_global_arg_default(tmp_path, capsys):
     path = tmp_path / "Dockerfile"
     path.write_text("ARG PYTHON_VERSION=3.12\nFROM python:${PYTHON_VERSION}-slim\n", encoding="utf-8")
-    assert read_dockerfile(path) == ImageTarget("3.12", "linux-x86_64", glibc="2.41")
-    assert "ARG PYTHON_VERSION=3.12" in capsys.readouterr().err
+    image = read_dockerfile(path)
+    assert image == ImageTarget("3.12", "linux-x86_64", glibc="2.41")
+    assert image.build_args == (("PYTHON_VERSION", "3.12"),)
+    assert capsys.readouterr().err == ""  # the CLI notes it, once, naming the file
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_cli_notes_the_global_arg_default_it_used(tmp_path, capsys, fake_pypi, quiet):
+    path = tmp_path / "Dockerfile"
+    path.write_text(
+        "ARG NODE=22\nARG PYTHON_VERSION=3.12\nFROM node:${NODE} AS assets\nFROM python:${PYTHON_VERSION}-slim\n",
+        encoding="utf-8",
+    )
+    main(["purewheel", "--dockerfile", str(path), "--json", *(["--quiet"] if quiet else [])])
+    err = capsys.readouterr().err
+    note = f"wheelgap: note: {path}: FROM uses the default of ARG PYTHON_VERSION=3.12"
+    assert (note in err) is not quiet
+    assert "NODE" not in err  # only the final image's FROM counts
+
+
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        "FROM --platform=$BUILDPLATFORM golang:1.22 AS build\nFROM python:3.13-slim\n",
+        "ARG NODE\nFROM node:${NODE} AS assets\nFROM python:3.13-slim\n",
+        "ARG A=1 B=2\nFROM node:${A} AS assets\nFROM python:3.13-slim\n",
+    ],
+)
+def test_build_arguments_only_matter_in_the_final_images_from(tmp_path, dockerfile):
+    # An earlier stage that isn't the final image's base can use any build argument, as before.
+    path = tmp_path / "Dockerfile"
+    path.write_text(dockerfile, encoding="utf-8")
+    assert read_dockerfile(path) == ImageTarget("3.13", "linux-x86_64", glibc="2.41")
+
+
+def test_build_argument_problem_in_the_final_images_base_stage(tmp_path):
+    path = tmp_path / "Dockerfile"
+    path.write_text("ARG PY\nFROM python:${PY}-slim AS base\nFROM base\n", encoding="utf-8")
+    with pytest.raises(DockerfileError, match="ARG PY has no default"):
+        read_dockerfile(path)
+
+
+def test_base_stage_global_arg_default_is_used(tmp_path):
+    path = tmp_path / "Dockerfile"
+    path.write_text(
+        "ARG PY=3.12\nFROM python:${PY}-slim AS base\nFROM --platform=$BUILDPLATFORM base\n", encoding="utf-8"
+    )
+    image = read_dockerfile(path)
+    assert image == ImageTarget("3.12", "linux-x86_64", glibc="2.41")
+    assert image.build_args == (("PY", "3.12"),)
 
 
 def test_read_dockerfile_expands_a_global_arg_default_in_platform(tmp_path):

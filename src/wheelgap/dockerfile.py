@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import math
 import re
-import sys
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NoReturn
 
@@ -92,6 +91,8 @@ class ImageTarget:
     platform: str
     glibc: str | None = None
     musl: str | None = None
+    # The global ARG defaults the final image's FROM used, as (name, value): a --build-arg can change them.
+    build_args: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
 
 _DIRECTIVE_RE = re.compile(r"^#\s*([A-Za-z]+)\s*=\s*(.+?)\s*$")
@@ -564,6 +565,11 @@ def _from_lines(text: str) -> list[str]:
 
 
 def _from_instructions(text: str) -> list[tuple[int, str]]:
+    """(line number, arguments) of every FROM instruction, as written: build arguments aren't expanded."""
+    return _parse_froms(text)[0]
+
+
+def _parse_froms(text: str) -> tuple[list[tuple[int, str]], _GlobalArgs]:
     """(line number, arguments) of every FROM instruction in order, the line being where the instruction starts.
 
     Heredoc bodies (`RUN <<EOF` ... `EOF`) are skipped, so a line in one is never read as an instruction.
@@ -660,23 +666,7 @@ def _from_instructions(text: str) -> list[tuple[int, str]]:
         heredocs = heredocs_in("".join(parts))
     if heredocs:
         raise DockerfileError(f"unterminated heredoc <<{heredocs[0][0]} (BuildKit rejects it)")
-    # Global ARG defaults declared before the first FROM are expanded in FROM, as Docker does; a build may pass a
-    # different --build-arg value, which wheelgap can't see, so each default used is noted on stderr.
-    global_args = _global_arg_defaults(args_before_from)
-    used: dict[str, str] = {}
-    expanded: list[tuple[int, str]] = []
-    for number, args in found:
-        args, names = _expand_build_args(args, global_args)
-        for name in names:
-            used.setdefault(name, global_args.defaults[name])
-        expanded.append((number, args))
-    for name, value in used.items():
-        print(
-            f"wheelgap: note: using the default of global ARG {name}={value}; -p/-t override a build that sets "
-            "--build-arg",
-            file=sys.stderr,
-        )
-    return expanded
+    return found, _global_arg_defaults(args_before_from)
 
 
 def last_from(text: str) -> str:
@@ -761,26 +751,47 @@ def final_image(text: str) -> tuple[str, str | None]:
 
 def final_from(text: str) -> tuple[str, str | None, int]:
     """final_image, plus the line of the FROM instruction that names that image."""
-    stages: dict[str, tuple[str, str | None, int]] = {}
-    lines = _from_instructions(text)
+    image, platform, number, _ = _final_from(text)
+    return image, platform, number
+
+
+def _final_from(text: str) -> tuple[str, str | None, int, dict[str, str]]:
+    """final_from, plus the global ARG defaults that FROM used. Build arguments are expanded in every FROM, as
+    Docker does, but one wheelgap can't expand is an error only in the FROM that names the final image: an
+    earlier stage built `--platform=$BUILDPLATFORM` doesn't change the image the last stage runs on."""
+    stages: dict[str, tuple[str, str | None, int, dict[str, str]]] = {}
+    lines, global_args = _parse_froms(text)
     if not lines:
         raise DockerfileError("no FROM line found")
-    for number, args in lines[:-1]:
+    errors: dict[int, DockerfileError] = {}
+
+    def split(number: int, args: str) -> tuple[str, str | None, str | None, dict[str, str]]:
+        try:
+            args, names = _expand_build_args(args, global_args)
+        except DockerfileError as e:
+            errors[number] = e  # the arguments stay as written; parse_image rejects their `$` anyway
+            names = []
         image, platform, stage = _split_from(args)
+        return image, platform, stage, {name: global_args.defaults[name] for name in names}
+
+    for number, args in lines[:-1]:
+        image, platform, stage, used = split(number, args)
         if (base := stages.get(image)) is not None:  # AS names are lowercased, references aren't
-            image, platform, number = base
+            image, platform, number, used = base
         if stage:
-            stages[stage] = (image, platform, number)
+            stages[stage] = (image, platform, number, used)
     number, args = lines[-1]
-    image, platform, _ = _split_from(args)
+    image, platform, _, used = split(number, args)
     if (base := stages.get(image)) is not None:
-        return base
-    if stages and not any(c in image for c in ":/@$") and image.lower() not in (*IMAGE_NAMES, "scratch"):
+        image, platform, number, used = base
+    elif stages and not any(c in image for c in ":/@$") and image.lower() not in (*IMAGE_NAMES, "scratch"):
         known = ", ".join(stages)
         raise DockerfileError(
             f"FROM {image}: not an earlier stage ({known}) or an official python image, pass -p/-t instead"
         )
-    return image, platform, number
+    if number in errors:
+        raise errors[number]
+    return image, platform, number, used
 
 
 def parse_image(image: str, platform: str | None = None) -> ImageTarget:
@@ -876,6 +887,8 @@ def read_dockerfile(path: Path) -> ImageTarget:
         byte = f"0x{e.object[e.start]:02x}"
         raise DockerfileError(f"{path}: not UTF-8 (byte {byte} at offset {e.start}), pass -p/-t instead") from None
     try:
-        return parse_image(*final_image(text))
+        image, platform, _, used = _final_from(text)
+        target = parse_image(image, platform)
     except DockerfileError as e:
         raise DockerfileError(f"{path}: {e}") from None
+    return replace(target, build_args=tuple(used.items())) if used else target
