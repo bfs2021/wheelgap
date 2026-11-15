@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `--dockerfile` now says `ARG PY has an empty default, pass -p/-t instead` for an `ARG PY=` that the final image's `FROM` uses, instead of claiming the syntax is wrong, and reports an ARG value with a non-ASCII character (such as the no-break space Docker splits an ARG on) as unreadable, instead of reading it as one value and failing later with `invalid tag`. (#333, thanks [@patrickballard](https://github.com/patrickballard))
 - When checking several `-p` versions splits a version range into more than one release row, summary counts (`N packages`, the gap and clean summaries, `--markdown`, `-q`, the hidden and advisory lines, and `--json` `summary.packages` and `summary.with_gaps`) now count that requirement once instead of once per row, under its worst status across those rows. Per-target counts and package rows stay per release. (#330, thanks [@X6M-Work](https://github.com/X6M-Work))
 - MCP: when a relative-path tool call fails after waiting for the client's roots, the error now includes the `roots/list` timeout note, so a missing-file error explains that the client's roots never arrived. (#329, thanks [@kunalkshah1](https://github.com/kunalkshah1))
 - `--suggest-targets` reads flat multi-line flow mappings and skips multi-line quoted values where their contents are not inspected, so those shapes no longer make an entire workflow unreadable. Multi-line quoted target and Python inputs remain unreadable. (#326, thanks [@kunalkshah1](https://github.com/kunalkshah1))
