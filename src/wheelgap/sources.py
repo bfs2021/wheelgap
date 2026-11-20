@@ -462,7 +462,11 @@ def _uv_build_restrictions(path: Path, source: Source) -> None:
         if not config_path.is_file():
             return
     try:
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        text = config_path.read_text(encoding="utf-8-sig")  # -sig: Windows editors add a BOM
+    except UnicodeDecodeError:
+        raise SourceError(f"{config_path}: isn't UTF-8, so its uv build restrictions can't be read") from None
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise SourceError(f"{config_path}: invalid TOML: {exc}") from None
     setting_table = "uv.toml" if standalone else "[tool.uv]"

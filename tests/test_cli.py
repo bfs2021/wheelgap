@@ -4002,6 +4002,68 @@ def test_uv_build_policy_changes_cli_status_and_explanation(
     assert fake_pypi == []
 
 
+BAD_UTF8_LOCK = (
+    'version = 1\n[manifest]\nrequirements = [{ name = "fastlib" }]\n'
+    '[[package]]\nname = "fastlib"\nversion = "2.0.0"\n'
+    'source = { registry = "https://pypi.org/simple" }\n'
+    'wheels = [{ url = "https://files.example/fastlib-2.0.0-cp313-cp313-manylinux_2_17_x86_64.whl" }]\n'
+)
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_pyproject_beside_the_lock_that_isnt_utf8_is_an_input_error(capsys, fake_pypi, tmp_path, as_json):
+    (tmp_path / "uv.lock").write_text(BAD_UTF8_LOCK, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_bytes("[tool.wheelgap]\n# café\n".encode("latin-1"))
+    args = [str(tmp_path), "-p", "3.13", "-t", "linux-x86_64"]
+    if as_json:
+        args.append("--json")
+    code, out, err = run(capsys, *args)
+    assert code == 2
+    assert "pyproject.toml" in err
+    assert "isn't UTF-8" in err
+    assert "Traceback" not in err
+    assert fake_pypi == []
+    if as_json:
+        error = json.loads(out)["error"]
+        assert error["type"] == "SourceError"
+        assert "pyproject.toml" in error["message"] and "isn't UTF-8" in error["message"]
+
+
+def test_uv_toml_beside_the_lock_that_isnt_utf8_is_an_input_error(capsys, fake_pypi, tmp_path):
+    (tmp_path / "uv.lock").write_text(BAD_UTF8_LOCK, encoding="utf-8")
+    (tmp_path / "uv.toml").write_bytes("no-build = true\n# café\n".encode("latin-1"))
+    code, out, err = run(capsys, str(tmp_path), "-p", "3.13", "-t", "linux-x86_64")
+    assert code == 2
+    assert "uv.toml" in err
+    assert "isn't UTF-8" in err
+    assert "Traceback" not in err
+    assert fake_pypi == []
+
+
+def test_a_pyproject_with_a_bom_is_read(tmp_path, capsys, fake_pypi):
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\n[manifest]\nrequirements = [{ name = "fastlib" }, { name = "puresdist" }]\n'
+        '[[package]]\nname = "fastlib"\nversion = "2.0.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        'wheels = [{ url = "https://files.example/fastlib-2.0.0-cp313-cp313-manylinux_2_17_x86_64.whl" }]\n'
+        'sdist = { url = "https://files.example/fastlib-2.0.0.tar.gz" }\n'
+        '[[package]]\nname = "puresdist"\nversion = "1.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        'sdist = { url = "https://files.example/puresdist-1.0.tar.gz" }\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_bytes(
+        '\ufeff[tool.uv]\nno-build = true\n\n[tool.wheelgap]\nignore = ["puresdist"]\n'.encode("utf-8")
+    )
+    code, out, err = run(capsys, str(tmp_path), "-p", "3.13", "-t", "linux-x86_64", "--json")
+    assert code == 0 and not err
+    data = json.loads(out)
+    assert data["ignored"] == ["puresdist"]  # the [tool.wheelgap] key applies despite the BOM
+    # the [tool.uv] no-build policy applies too: sdist-only puresdist can't build, so its gap is the ignored one
+    assert [p["name"] for p in data["packages"]] == ["fastlib"]
+    assert fake_pypi == []
+
+
 def test_explain_issues_url_text_output(capsys, fake_pypi):
     code, out, _ = run(capsys, "gapwithissues==1.0", "-p", "3.13", "-t", "linux-x86_64", "--explain")
     assert code == 1

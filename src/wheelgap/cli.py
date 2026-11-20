@@ -460,7 +460,11 @@ def read_python_version(folder: Path) -> list[str]:
 
 def load_config(path: Path) -> dict:
     """Defaults from the [tool.wheelgap] table; command-line flags still win."""
-    table = tomllib.loads(path.read_text(encoding="utf-8")).get("tool", {}).get("wheelgap", {})
+    try:
+        text = path.read_text(encoding="utf-8-sig")  # -sig: Windows editors add a BOM
+    except UnicodeDecodeError:
+        raise SourceError(f"{path}: isn't UTF-8, so its [tool.wheelgap] table can't be read") from None
+    table = tomllib.loads(text).get("tool", {}).get("wheelgap", {})
     if not isinstance(table, dict):
         raise SourceError(f"{path}: [tool.wheelgap] must be a table")
     config = {}
