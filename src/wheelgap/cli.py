@@ -501,7 +501,8 @@ def load_config(path: Path) -> dict:
 
 def load_uv_targets(path: Path, pythons: list[str]) -> list[str]:
     """Native platforms needed by any required-environments marker for any selected Python."""
-    table = tomllib.loads(path.read_text(encoding="utf-8")).get("tool", {}).get("uv", {})
+    # -sig: load_config() has already read this file, so only a BOM is left to allow for
+    table = tomllib.loads(path.read_text(encoding="utf-8-sig")).get("tool", {}).get("uv", {})
     if not isinstance(table, dict):
         raise SourceError(f"{path}: [tool.uv] must be a table")
     markers = table.get("required-environments", [])

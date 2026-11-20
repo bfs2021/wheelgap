@@ -4029,15 +4029,23 @@ def test_pyproject_beside_the_lock_that_isnt_utf8_is_an_input_error(capsys, fake
         assert "pyproject.toml" in error["message"] and "isn't UTF-8" in error["message"]
 
 
-def test_uv_toml_beside_the_lock_that_isnt_utf8_is_an_input_error(capsys, fake_pypi, tmp_path):
+@pytest.mark.parametrize("as_json", [False, True])
+def test_uv_toml_beside_the_lock_that_isnt_utf8_is_an_input_error(capsys, fake_pypi, tmp_path, as_json):
     (tmp_path / "uv.lock").write_text(BAD_UTF8_LOCK, encoding="utf-8")
     (tmp_path / "uv.toml").write_bytes("no-build = true\n# café\n".encode("latin-1"))
-    code, out, err = run(capsys, str(tmp_path), "-p", "3.13", "-t", "linux-x86_64")
+    args = [str(tmp_path), "-p", "3.13", "-t", "linux-x86_64"]
+    if as_json:
+        args.append("--json")
+    code, out, err = run(capsys, *args)
     assert code == 2
     assert "uv.toml" in err
     assert "isn't UTF-8" in err
     assert "Traceback" not in err
     assert fake_pypi == []
+    if as_json:
+        error = json.loads(out)["error"]
+        assert error["type"] == "SourceError"
+        assert "uv.toml" in error["message"] and "isn't UTF-8" in error["message"]
 
 
 def test_a_pyproject_with_a_bom_is_read(tmp_path, capsys, fake_pypi):
@@ -4052,15 +4060,22 @@ def test_a_pyproject_with_a_bom_is_read(tmp_path, capsys, fake_pypi):
         'sdist = { url = "https://files.example/puresdist-1.0.tar.gz" }\n',
         encoding="utf-8",
     )
+    # No -p or -t: the Python comes from [tool.wheelgap] and the targets from [tool.uv] required-environments,
+    # so all three readers of this pyproject.toml have to get past the BOM.
     (tmp_path / "pyproject.toml").write_bytes(
-        '\ufeff[tool.uv]\nno-build = true\n\n[tool.wheelgap]\nignore = ["puresdist"]\n'.encode("utf-8")
+        (
+            "\ufeff[tool.uv]\nno-build = true\nrequired-environments = [\"sys_platform == 'win32'\"]\n\n"
+            '[tool.wheelgap]\npython = ["3.13"]\n'
+        ).encode("utf-8")
     )
-    code, out, err = run(capsys, str(tmp_path), "-p", "3.13", "-t", "linux-x86_64", "--json")
-    assert code == 0 and not err
+    code, out, err = run(capsys, str(tmp_path), "--json")
+    assert code == 1
     data = json.loads(out)
-    assert data["ignored"] == ["puresdist"]  # the [tool.wheelgap] key applies despite the BOM
-    # the [tool.uv] no-build policy applies too: sdist-only puresdist can't build, so its gap is the ignored one
-    assert [p["name"] for p in data["packages"]] == ["fastlib"]
+    # the [tool.wheelgap] python key and the required-environments targets apply despite the BOM
+    assert [(t["python"], t["platform"]) for t in data["targets"]] == [("3.13", "win-amd64"), ("3.13", "win-arm64")]
+    # and so does the [tool.uv] no-build policy: sdist-only puresdist is missing, not buildable from source
+    packages = {item["name"]: item for item in data["packages"]}
+    assert packages["puresdist"]["results"] == {"win-amd64": "missing", "win-arm64": "missing"}
     assert fake_pypi == []
 
 
