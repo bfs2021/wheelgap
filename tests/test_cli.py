@@ -4079,6 +4079,17 @@ def test_a_pyproject_with_a_bom_is_read(tmp_path, capsys, fake_pypi):
     assert fake_pypi == []
 
 
+def test_a_pyproject_with_a_bom_sets_uv_default_groups(capsys, fake_pypi, fixtures, tmp_path):
+    shutil.copy(fixtures / "uvselect" / "uv.lock", tmp_path)
+    (tmp_path / "pyproject.toml").write_bytes('\ufeff[tool.uv]\ndefault-groups = ["docs"]\n'.encode("utf-8"))
+    # --extra makes wheelgap read [tool.uv] default-groups, which replaces the dev group with docs
+    code, out, err = run(capsys, str(tmp_path), "-p", "3.13", "-t", "linux-x86_64", "--json", "--extra", "gpu")
+    assert code in (0, 1), err
+    names = {row["name"] for row in json.loads(out)["packages"]}
+    assert {"docstool", "gpu"} <= names
+    assert "devtool" not in names
+
+
 def test_explain_issues_url_text_output(capsys, fake_pypi):
     code, out, _ = run(capsys, "gapwithissues==1.0", "-p", "3.13", "-t", "linux-x86_64", "--explain")
     assert code == 1

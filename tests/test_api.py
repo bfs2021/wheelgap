@@ -1103,7 +1103,8 @@ def test_check_lockfile_deps_allow_skipped_resolves_index_packages(tmp_path):
 
 
 def test_check_lockfile_names_a_pyproject_beside_the_lock_that_isnt_utf8(tmp_path, fake_pypi):
-    # The command line reads [tool.wheelgap] first, so only the API reaches the uv build-restrictions reader's message.
+    # The command line reads [tool.wheelgap] from the first input's folder first, so it reaches this message only for
+    # a later input; the API reads no [tool.wheelgap], so it always does.
     (tmp_path / "uv.lock").write_text(
         'version = 1\n[manifest]\nrequirements = [{ name = "fastlib" }]\n'
         '[[package]]\nname = "fastlib"\nversion = "2.0.0"\n'
@@ -1115,3 +1116,13 @@ def test_check_lockfile_names_a_pyproject_beside_the_lock_that_isnt_utf8(tmp_pat
     with pytest.raises(SourceError, match=r"pyproject\.toml: isn't UTF-8, so its uv build restrictions can't be read"):
         wheelgap.check_lockfile(tmp_path / "uv.lock", wheelgap.make_targets("3.13", "linux-x86_64"), offline=True)
     assert not fake_pypi
+
+
+def test_check_lockfile_names_a_pyproject_beside_the_lock_that_isnt_utf8_when_selecting_groups(fixtures, tmp_path):
+    # With a uv.toml beside the lock, the build restrictions come from it, so the default-groups read is the first
+    # to open this pyproject.toml.
+    (tmp_path / "uv.lock").write_bytes((fixtures / "uvselect" / "uv.lock").read_bytes())
+    (tmp_path / "uv.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_bytes("[tool.uv]\n# caf\xe9\n".encode("latin-1"))
+    with pytest.raises(SourceError, match=r"pyproject\.toml: isn't UTF-8, so its \[tool\.uv\] default-groups"):
+        wheelgap.check_lockfile(tmp_path, wheelgap.make_targets("3.13", "linux-x86_64"), offline=True, groups=["docs"])

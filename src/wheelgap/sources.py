@@ -642,7 +642,15 @@ def select_uv_dependencies(
             continue
         pyproject = source.uv_pyproject
         if pyproject is not None and pyproject.is_file():
-            uv = tomllib.loads(pyproject.read_text(encoding="utf-8-sig")).get("tool", {}).get("uv", {})
+            # Nothing else may have read this file yet: a uv.toml beside it replaces [tool.uv] for build restrictions.
+            try:
+                text = pyproject.read_text(encoding="utf-8-sig")  # -sig: Windows editors add a BOM
+            except UnicodeDecodeError:
+                raise SourceError(f"{pyproject}: isn't UTF-8, so its [tool.uv] default-groups can't be read") from None
+            try:
+                uv = tomllib.loads(text).get("tool", {}).get("uv", {})
+            except tomllib.TOMLDecodeError as exc:
+                raise SourceError(f"{pyproject}: invalid TOML: {exc}") from None
             defaults = uv.get("default-groups", ["dev"])
             if defaults == "all":
                 source.uv_default_groups = ["*"]
